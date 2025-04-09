@@ -6,38 +6,50 @@ import streamlit as st
 from collections import defaultdict
 from PIL import Image
 import os
-import subprocess
-import sys
-# Definir la ruta local del modelo
-model_path = os.path.join(os.getcwd(), "spacy_model", "en_core_web_sm")
-nlp = spacy.load(model_path)
+import nltk
+from nltk.corpus import wordnet as wn
 
-# # Intentar cargar el modelo desde la carpeta local
-# try:
-#     nlp = spacy.load(model_path)
-# except OSError:
-#     # Si falla, puedes intentar descargar el modelo (aunque no debería ser necesario si ya tienes el modelo)
-#     subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
-#     nlp = spacy.load(model_path)
+# Descargar recursos necesarios para WordNet
+nltk.download('wordnet')
 
-# Cargar modelo de SpaCy
-# nlp = spacy.load("en_core_web_sm") 
+# Cargar el modelo de spaCy
+nlp = spacy.load("en_core_web_sm")  # O usar el modelo local si es necesario
 
+# Stopwords personalizadas
 custom_stopwords = {"and", "or", "but", "the", "a", "an", "are", "is", "was", "were", "be", "being", "been"}
 
+# Función para limpiar hipónimos (Lematización y minúsculas)
 def clean_hyponyms(hyponyms_text):
     doc = nlp(hyponyms_text)
     clean = []
     for token in doc:
-        if token.pos_ in ["NOUN", "PROPN"]:
+        if token.pos_ in ["NOUN", "PROPN"]:  # Solo sustantivos y nombres propios
             if token.text.lower() not in custom_stopwords:
-                clean.append(token.lemma_.lower())
+                clean.append(token.lemma_.lower())  # Usamos la forma lematizada
     return list(set(clean))
 
+# Función para validar si hay relación hiperónimo/hipónimo usando WordNet
+def is_hypernym(hyper, hypo):
+    synsets_hyper = wn.synsets(hyper)
+    synsets_hypo = wn.synsets(hypo)
+    for hypo_syn in synsets_hypo:
+        for hyper_syn in synsets_hyper:
+            if hyper_syn in hypo_syn.hypernyms():  # Verifica si hay relación de hiperónimo
+                return True
+    return False
+
+# Ampliar los patrones de Hearst
 def extract_hyponym_patterns(text):
     patterns = [
         r"(?P<hypernym>\w+)\s+(?:such as|including|especially|like)\s+(?P<hyponyms>[\w\s,]+)",
         r"(?P<hyponyms>[\w\s,]+)\s+(?:are types of|are kinds of)\s+(?P<hypernym>\w+)",
+        r"(?P<hypernym>\w+)\s+is a hypernym of\s+(?P<hyponyms>[\w\s,]+)",
+        r"(?P<hyponyms>[\w\s,]+)\s+are hyponyms of the word\s+[\"']?(?P<hypernym>\w+)[\"']?",
+        r"(?P<hypernym>\w+)\s+includes\s+(?P<hyponyms>[\w\s,]+)",
+        r"(?P<hyponyms>[\w\s,]+)\s+are examples of\s+(?P<hypernym>\w+)",
+        r"(?P<hypernym>\w+)\s+such as\s+(?P<hyponyms>[\w\s,]+)",
+        r"(?P<hyponyms>[\w\s,]+)\s+are members of the class\s+(?P<hypernym>\w+)",
+        r"(?P<hyponyms>[\w\s,]+)\s+are kinds of\s+(?P<hypernym>\w+)"
     ]
     
     pairs = []
@@ -48,9 +60,16 @@ def extract_hyponym_patterns(text):
             hypos_raw = match.group("hyponyms")
             hypos_clean = clean_hyponyms(hypos_raw)
             for hypo in hypos_clean:
-                pairs.append((hyper, hypo))
-    return pairs
+                if is_hypernym(hyper, hypo):  # Validar si la relación es real usando WordNet
+                    pairs.append((hyper, hypo))
 
+    grouped = defaultdict(list)
+    for hyper, hypo in pairs:
+        grouped[hyper].append(hypo)
+
+    return pairs, grouped
+
+# Construir mapas conceptuales y grafo global
 def build_and_save_concept_maps(grouped_pairs):
     root_node = "Concept Map of the Document"
     global_graph = nx.DiGraph()
@@ -86,7 +105,8 @@ def build_and_save_concept_maps(grouped_pairs):
 
     return saved_images
 
-def main():
+# Función principal para generar mapas conceptuales
+def generate_concept_maps(text):
     st.title("🧠 Generador de Mapas Conceptuales (Text Mining)")
     st.write("Este sistema detecta relaciones de hiperonimia e hiponimia y construye mapas conceptuales a partir del texto proporcionado.")
 
@@ -97,15 +117,11 @@ def main():
             st.warning("Por favor, escribe un texto para analizar.")
             return
 
-        pairs = extract_hyponym_patterns(input_text)
+        pairs, grouped = extract_hyponym_patterns(input_text)
 
         if not pairs:
             st.info("No se encontraron relaciones de hiperonimia/hiponimia.")
         else:
-            grouped = defaultdict(list)
-            for hyper, hypo in pairs:
-                grouped[hyper].append(hypo)
-
             st.subheader(f"🔍 Relaciones encontradas: {len(grouped)}")
             for hyper, hypos in grouped.items():
                 st.markdown(f"**{hyper.capitalize()}** → {', '.join(hypos)}")
@@ -114,7 +130,8 @@ def main():
             saved_files = build_and_save_concept_maps(grouped)
             for filename in saved_files:
                 if os.path.exists(filename):
-                    st.image(Image.open(filename), caption=filename, use_container_width =True)
+                    st.image(Image.open(filename), caption=filename, use_container_width=True)
 
+# Ejecutar ejemplo
 if __name__ == "__main__":
-    main()
+    generate_concept_maps('')
